@@ -1,23 +1,43 @@
 <html> <head>
 <title>Document: {{ row.title }}</title>
+<script src="/assets/jquery-1.4.2.js"></script>
+<style>
+.hidden {
+    display: none;
+}
+</style>
 </head>
 <body>
+<script type="text/javascript">
+
+$(document).ready(function(){
+    $(".kvals .key").each(function() {
+        var key;
+        key = $(this).attr("name"); 
+        if (key.charAt(0) == "_") {
+            $(this).parents("tr").addClass("hidden");
+        }
+    });
+});
+</script>
+
 <h1>Document: {{ row.title }}</h1>
 <a href="/">Return to index</a>
 
 <form method="post" action=".">
-<table>
-    {% for k, v in row.items %}
-  <tr>
-        <td> {{k}}</td>
-        <td><input type="text" name="{{k}}" value="{{ v}}"></td>
-  </tr>
-    {% endfor %}
-  <tr>
-        <td><input type="text" name="new-key"></td>
-        <td><input type="text" name="new-val"></td>
-  </tr>
-</table>
-<input type="submit">
+    <table>
+        {% for k, v in row.items %}
+            <tr class="kvals" id="{{k}}">
+                    <td class="key" name="{{k}}">{{k}}</td>
+                    <td class="val"><input type="text" id="{{k}}" name="{{k}}" value="{{v}}"></td>
+            </tr>
+        {% endfor %}
+    <tr>
+            <td><input type="text" name="new-key"></td>
+            <td><input type="text" name="new-val"></td>
+    </tr>
+    </table>
+    <input type="submit">
 </form>
-</body> </html>
+</body> 
+</html>

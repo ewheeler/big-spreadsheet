@@ -1,3 +1,4 @@
+Upload Excel spreadsheets to couchdb
 Based on https://github.com/lethain/comfy-django-example
 
 DEPENDENCIES
@@ -5,13 +6,3 @@ DEPENDENCIES
     sqlite3
     xlrd
     couchdb-django
-
-Please rename the checked out project directory form 'big-spreadsheet' to 'big_spreadsheet' before trying to run the project. Run the project by first starting CouchDB
-
-    couchdb
-
-and then run the Django project.
-
-    python manage.py runserver
-
-And thats all there is to it.

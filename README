@@ -1,4 +1,12 @@
-Please rename the checked out project directory form 'comfy-django-example' to 'comfy_django_example' before trying to run the project. Run the project by first starting CouchDB
+Based on https://github.com/lethain/comfy-django-example
+
+DEPENDENCIES
+    django
+    sqlite3
+    xlrd
+    couchdb-django
+
+Please rename the checked out project directory form 'big-spreadsheet' to 'big_spreadsheet' before trying to run the project. Run the project by first starting CouchDB
 
     couchdb
 

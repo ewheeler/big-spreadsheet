@@ -4,6 +4,6 @@ from django.conf.urls.defaults import *
 # from django.contrib import admin
 # admin.autodiscover()
 
-urlpatterns = patterns('comfy_django_example',
-    (r'^', include('couch_docs.urls')),
+urlpatterns = patterns('big_spreadsheet',
+    (r'^', include('bsapp.urls')),
 )

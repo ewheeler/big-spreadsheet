@@ -1,0 +1,23 @@
+<html> <head>
+<title>Document: {{ row.title }}</title>
+</head>
+<body>
+<h1>Document: {{ row.title }}</h1>
+<a href="/">Return to index</a>
+
+<form method="post" action=".">
+<table>
+    {% for k, v in row.items %}
+  <tr>
+        <td> {{k}}</td>
+        <td><input type="text" name="{{k}}" value="{{ v}}"></td>
+  </tr>
+    {% endfor %}
+  <tr>
+        <td><input type="text" name="new-key"></td>
+        <td><input type="text" name="new-val"></td>
+  </tr>
+</table>
+<input type="submit">
+</form>
+</body> </html>

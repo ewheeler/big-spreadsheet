@@ -72,4 +72,5 @@ TEMPLATE_DIRS = (
 
 INSTALLED_APPS = (
     'big_spreadsheet.bsapp',
+    'south',
 )

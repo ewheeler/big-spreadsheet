@@ -1,4 +1,5 @@
 import json
+import datetime
 import xlrd
 from django.http import Http404,HttpResponseRedirect,HttpResponse
 from django.shortcuts import render_to_response
@@ -52,7 +53,10 @@ def upload(req):
         form = forms.UploadForm(req.POST, req.FILES)
         if form.is_valid():
             try:
-                f = form.save()
+                f = form.save(commit=False)
+                nownow = datetime.datetime.utcnow()
+                f.date_uploaded = nownow
+                f.save()
                 book = xlrd.open_workbook(f.local_document.file.name)
                 sheets = book.sheet_names()
                 sheet = None
@@ -64,6 +68,7 @@ def upload(req):
                     column_names = sheet.row_values(0)
                     for r in range(int(sheet.nrows))[1:]:
                         rd = dict(zip(column_names, sheet.row_values(r)))
+                        rd.update({'uploaded_at': nownow})
                         docs.create(rd)
             except Exception, e:
                 print 'BANG'

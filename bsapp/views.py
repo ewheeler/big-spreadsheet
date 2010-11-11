@@ -5,6 +5,8 @@ from django.http import Http404,HttpResponseRedirect,HttpResponse
 from django.shortcuts import render_to_response
 from django.utils import simplejson
 from couchdb import Server
+
+from .models import Report
 from . import forms
 
 SERVER = Server('http://127.0.0.1:5984')
@@ -65,11 +67,29 @@ def upload(req):
                         sheet = book.sheet_by_name(s)
                         break
                 if sheet is not None:
-                    column_names = sheet.row_values(0)
+                    column_names = [k.lower() for k in sheet.row_values(0)]
                     for r in range(int(sheet.nrows))[1:]:
                         rd = dict(zip(column_names, sheet.row_values(r)))
-                        rd.update({'uploaded_at': nownow})
-                        docs.create(rd)
+
+                        lst = ['', ' ']
+                        for k, v in list(rd.items()):
+                            if k in lst or v in lst:
+                                del rd[k]
+
+                        report = Report()
+                        if rd.has_key('organization'):
+                            report.organization=rd['organization']
+                        if 'province' in rd:
+                            report.province=rd['province']
+                        if 'district' in rd:
+                            report.district=rd['district']
+                        if 'codes' in rd:
+                            report.codes=rd['codes']
+                        if 'cluster' in rd:
+                            report.cluster=rd['cluster']
+                        report.date_uploaded=nownow
+
+                        report.store(docs)
             except Exception, e:
                 print 'BANG'
                 print Exception

@@ -2,7 +2,7 @@
 # vim: ai ts=4 sts=4 et sw=4
 from django import forms
 
-from .models import Document
+from .models import Upload
 
 class UploadForm(forms.ModelForm):
 
@@ -10,5 +10,5 @@ class UploadForm(forms.ModelForm):
         required=False)
 
     class Meta:
-        model = Document
+        model = Upload
         fields = ('local_document',)

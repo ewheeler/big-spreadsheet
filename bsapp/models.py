@@ -1,7 +1,7 @@
 from django.db import models
 from django.utils.translation import ugettext_lazy as _
 
-class Document(models.Model):
+class Upload(models.Model):
     """
     A simple model which stores data about an uploaded document.
     """

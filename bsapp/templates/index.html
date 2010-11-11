@@ -15,11 +15,11 @@
 </table>
 </form>
 <hr>
-<ol>
+<table>
   {% for row in rows %}
-  <li>
-  <a id="title" href="/doc/{{ row }}/">{{ row }}</a>
-  </li>
+  <tr>
+  <td><a id="title" href="/doc/{{ row }}/">{{ row }}</a></td>
+  </tr>
   {% endfor %}
-</ol>
+</table>
 </body> </html>

@@ -19,6 +19,15 @@
     <input type="submit">
 </form>
 <hr>
+{% if terms %}
+{{count}} Records matching:<br />
+<ul>
+{% for k,v in terms.items %}
+<li>{{k}} = {{v}}</li>
+{% endfor %}
+</ul>
+{% endif %}
+<hr>
 <table>
   {% for row in rows %}
   <tr>

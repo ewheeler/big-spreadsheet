@@ -1,4 +1,5 @@
 import json
+import copy
 import datetime
 import xlrd
 from django.http import Http404,HttpResponseRedirect,HttpResponse
@@ -16,112 +17,67 @@ if (len(SERVER) == 0):
 def index(request):
     docs = SERVER['docs']
 
-    def org_cluster(org, clust):
-	org_cluster_map = '''function(doc) {
-	    emit([doc.organization, doc.cluster], doc);
-	}'''
-	res = docs.query(org_cluster_map)
-	reps = [r for r in res[[org, clust]].rows]
-	return reps
-
-    def cluster_prov(clust, prov):
-	cluster_prov_map = '''function(doc) {
-	    emit([doc.cluster, doc.province], doc);
-	}'''
-	res = docs.query(cluster_prov_map)
-	reps = [r for r in res[[clust, prov]].rows]
-	return reps
-
-    def prov_org(prov, org):
-	prov_org_map = '''function(doc) {
-	    emit([doc.province, doc.organization], doc);
-	}'''
-	res = docs.query(prov_org_map)
-	reps = [r for r in res[[prov,org]].rows]
-	return reps
-
-    def orgs():
-    	org_map = '''function(doc) {
-	    emit([doc.organization], doc.organization);
-	}'''
-	res = docs.query(org_map)
-	reps = list(set([r.value for r in res.rows]))
-	return reps
-
-    def provs():
-    	prov_map = '''function(doc) {
-	    emit([doc.province], doc.province);
-	}'''
-	res = docs.query(prov_map)
-	reps = list(set([r.value for r in res.rows]))
-	return reps
-
-    def dists():
-    	dist_map = '''function(doc) {
-	    emit([doc.district], doc.district);
-	}'''
-	res = docs.query(dist_map)
-	reps = list(set([r.value for r in res.rows]))
-	return reps
-
-    def clusts():
-    	clust_map = '''function(doc) {
-	    emit([doc.cluster], doc.cluster);
-	}'''
-	res = docs.query(clust_map)
-	reps = list(set([r.value for r in res.rows]))
-	return reps
-
-    def codes():
-    	code_map = '''function(doc) {
-	    emit([doc.codes], doc.codes);
-	}'''
-	res = docs.query(code_map)
-	reps = list(set([r.value for r in res.rows]))
-	return reps
+    def key_list(key):
+	map_fun = '''function(doc) { emit([doc.%s], doc.%s); }''' % (key, key)
+	res = docs.query(map_fun)
+	keys = list(set([r.value for r in res.rows]))
+	return keys
 
     def form_filter(**kwargs):
     	try:
-	    keys = kwargs.keys()
-	    print keys
-	    attrs = "doc." + (", doc.".join(keys))
-	    print attrs
+	    terms = copy.copy(kwargs)
 
-	    # slice
-	    terms = ",".join(kwargs.values())
-	    print terms
+	    # map with the most limiting term
+	    if 'district' in kwargs:
+		to_use = "doc.district"
+		key = kwargs.pop('district')
+	    elif 'cluster' in kwargs:
+	        to_use = "doc.cluster"
+		key = kwargs.pop('cluster')
+	    elif 'codes' in kwargs:
+	        to_use = "doc.codes"
+		key = kwargs.pop('codes')
+	    elif 'province' in kwargs:
+	        to_use = "doc.province"
+		key = kwargs.pop('province')
+	    elif 'organization' in kwargs:
+	        to_use = "doc.organization"
+		key = kwargs.pop('organization')
+	    else:
+	        return None
 
-	    form_filter_map = '''function(doc) { emit([%s], doc); }''' % (attrs)
+	    form_filter_map = '''function(doc) { emit(%s, doc); }''' % (to_use)
 	    res = docs.query(form_filter_map)
-	    len(res)
-	    print res
-	    reps = [r for r in res[[terms]].rows]
-	    len(reps)
-	    print reps
-	    return reps
+	    # remaining terms to limit results
+	    limit_by = kwargs
+	    reps = []
+	    if res.rows is not None:
+		for r in res.rows:
+		    if key == r.key:
+			if len(limit_by) == 0:
+			    reps.append(r.id)
+			if len(limit_by) > 0:
+			    vals = limit_by.values()
+			    if set(vals).issubset(set(r.value.values())):
+				reps.append(r.id)
+
+	    return terms, reps
 	except Exception, e:
 	    print 'bang'
-	    print Exception
 	    print e
 
-    key_lists = {'organizations':orgs(), 'provinces':provs(),
-    	'districts':dists(), 'clusters':clusts(), 'codes': codes()}
+    doc_keys = ['organization', 'province', 'district', 'cluster', 'codes']
+    key_lists = dict(zip( doc_keys ,[key_list(k) for k in doc_keys]))
 
     if request.method == "POST":
-        #title = request.POST['title'].replace(' ','')
-        #docs[title] = {'title':title,'text':""}
-        #return HttpResponseRedirect(u"/doc/%s/" % title)
 	d = dict(request.POST.items())
-	print d
 	lst = ['', ' ', '0']
 	for k, v in list(d.items()):
 	    if k in lst or v in lst:
 		del d[k]
-	print d
-	rows = form_filter(**d)
-	print rows
+	terms, rows = form_filter(**d)
 	return render_to_response('index.html',{'rows':rows,
-	    'key_lists':key_lists})
+	    'key_lists':key_lists, 'terms':terms, 'count': len(rows)})
     return render_to_response('index.html',{'rows':docs,
     	'key_lists':key_lists})
 

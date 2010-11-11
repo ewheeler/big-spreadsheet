@@ -5,14 +5,18 @@
 <body>
 <h1>Documents</h1>
 
-<form method="post" action=".">
-<table>
-  <tr>
-    <td> Title for new document </td>
-    <td><input type="text" name="title"></td>
-    <td><input type="submit"></td>
-  </tr>
-</table>
+<hr>
+<form id="filter" method="post" action=".">
+    {% for name,list in key_lists.items %}
+	<select id="{{name}}" name="{{name}}">
+		<option value="0"></option>
+	{% for i in list%}
+		<option value="{{i}}">{{i}}</option>
+	{% endfor %}
+	</select>
+	<label for="{{name}}">{{name}}</label>
+    {% endfor %}
+    <input type="submit">
 </form>
 <hr>
 <table>

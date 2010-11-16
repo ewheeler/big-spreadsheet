@@ -14,12 +14,6 @@
 		.cell-effort-driven {
 			text-align: center;
 		}
-		.mine{
-			background-color: green;
-		}
-		.yours{
-			background-color: red;
-		}
 	</style>
 	</head>
 	<body>
@@ -104,17 +98,5 @@
 		});
 
 		</script>
-
-            <span style="display:none;">
-                {% if conflicts %}
-		    {% for conflict in conflicts %}
-			<ul class="conflict">
-			{% for k, v in conflict.items %}
-				<li class="{{k}}">{{v}}</li>
-			{% endfor %}
-			</ul>
-		    {% endfor %}
-                {% endif %}
-            </span>
 	</body>
 </html>

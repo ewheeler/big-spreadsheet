@@ -1,21 +1,43 @@
+#!/usr/bin/env python
+# vim: ai ts=4 sts=4 et sw=4 encoding=utf-8
+
 import json
 import copy
 import datetime
+import hashlib
+import re
+import unicodedata
+
+#from couchdb import Server
+from couchdbkit import *
+from restkit import SimplePool
 import xlrd
+
 from django.http import Http404,HttpResponseRedirect,HttpResponse
 from django.shortcuts import render_to_response
 from django.utils import simplejson
-from couchdb import Server
+
 
 from . import forms
+from bsapp.reconcile import *
 
-SERVER = Server('http://127.0.0.1:5984')
-if (len(SERVER) == 0):
-    SERVER.create('docs')
+#SERVER = Server('http://127.0.0.1:5984')
+#if (len(SERVER) == 0):
+#    SERVER.create('docs')
+
+# set a threadsafe pool to keep 2 connections alives
+pool = SimplePool(keepalive=2)
+
+# server object
+server = Server(pool_instance=pool)
+
+# create database
+docs = server.get_or_create_db("docs")
 
 
 def index(request):
-    docs = SERVER['docs']
+    #docs = SERVER['docs']
+    docs = server.get_or_create_db("docs")
 
     def key_list(key):
 	map_fun = '''function(doc) { emit([doc.%s], doc.%s); }''' % (key, key)
@@ -82,11 +104,13 @@ def index(request):
     	'key_lists':key_lists})
 
 def docs(request):
-    docs = SERVER['docs']
+    #docs = SERVER['docs']
+    docs = server.get_or_create_db("docs")
     return HttpResponse((docs), 'application/javascript')
 
 def detail(request,id):
-    docs = SERVER['docs']
+    #docs = SERVER['docs']
+    docs = server.get_or_create_db("docs")
     try:
         doc = docs[id]
     except ResourceNotFound:
@@ -109,14 +133,51 @@ def detail(request,id):
     return render_to_response('detail.html',{'row':doc})
     #return HttpResponse(simplejson.dumps(doc), 'application/javascript')
 
+def unq_ordered(seq, idfun=None):
+    # order preserving
+    if idfun is None:
+        def idfun(x): return x
+    seen = {}
+    result = []
+    for item in seq:
+        marker = idfun(item)
+        # in old Python versions:
+        # if seen.has_key(marker)
+        # but in new ones:
+        if marker in seen: continue
+        seen[marker] = 1
+        result.append(item)
+    return result
+
+def fingerprint(string):
+    # replace weird unicode characters with similar looking ones, encode as ascii
+    # TODO this doesnt work quite right
+    a = unicodedata.normalize('NFKC', string).encode('ascii','ignore')
+    # remove leading and trailing whitespace
+    f = string.strip()
+    # lowercase
+    f = f.lower()
+    # remove everything but letters and numbers and whitespace
+    f = re.sub("[^a-zA-Z0-9\s]", "", f)
+    # sort tokens and remove duplicates
+    l = unq_ordered(sorted(f.split()))
+    # join tokens into string
+    s = "".join(l)
+    return s
+
+
+
 def upload(req):
-    docs = SERVER['docs']
+    #docs = SERVER['docs']
+    docs = server.get_or_create_db("docs")
     if req.method == 'POST':
         form = forms.UploadForm(req.POST, req.FILES)
         if form.is_valid():
             try:
                 f = form.save(commit=False)
-                nownow = datetime.datetime.utcnow()
+                nownow = datetime.datetime.utcnow().replace(microsecond=0).isoformat()
+                nownow = nownow.replace('T', ' ')
+
                 f.date_uploaded = nownow
                 f.save()
                 book = xlrd.open_workbook(f.local_document.file.name)
@@ -128,18 +189,78 @@ def upload(req):
                         break
                 if sheet is not None:
                     column_names = [k.lower() for k in sheet.row_values(0)]
+                    conflicts = []
+                    product_errors = []
+                    country_errors = []
                     for r in range(int(sheet.nrows))[1:]:
+                        # dictionary mapping column names to row content
                         rd = dict(zip(column_names, sheet.row_values(r)))
-			rd.update({'date_uploaded':nownow})
 
+                        # remove blank items
+                        # TODO include things like N/A, None, etc
                         lst = ['', ' ']
                         for k, v in list(rd.items()):
                             if k in lst or v in lst:
                                 del rd[k]
-                        docs.save(**rd)
+
+                        if len(rd.keys()) ==0:
+                            continue
+
+                        # add date uploaded to dict
+                        rd.update({'date_uploaded':nownow})
+
+                        # columns used to uniquely identify rows
+                        columns_for_id = ["country", "product", "p.o. number", "yyyy-ww", "supplier", "gavi/ non gavi", "comment"]
+
+                        if 'product' in rd:
+                            reconciled_product, product_result = reconcile_product(rd['product'])
+                        if 'country' in rd:
+                            reconciled_country, country_result = reconcile_country(rd['country'])
+
+                        if reconciled_product and reconciled_country:
+                            # generate hash for _id
+                            h = hashlib.md5()
+                            h.update(country_result)
+                            h.update(product_result)
+                            h.update(rd['yyyy-ww'])
+                            if 'supplier' in rd:
+                                h.update(rd['supplier'])
+                            if 'gavi/ non gavi' in rd:
+                                h.update(rd['gavi/ non gavi'])
+                            if 'comment' in rd:
+                                h.update(rd['comment'])
+                            if 'campaign type' in rd:
+                                h.update(rd['campaign type'])
+                            _id = h.hexdigest()
+
+                            rd.update({u'_id': _id})
+
+                            # attempt to fetch a document
+                            # with this id
+                            try:
+                                collision = docs.get(_id)
+                            except Exception, e:
+                                collision = None
+
+                            if collision is None:
+                                # save to database
+                                docs.save_doc(rd)
+                            else:
+                                conflicts.append({"existing":collision, "new": rd})
+                        else:
+                            if not reconciled_product:
+                                product_errors.append(product_result)
+                            if not reconciled_country:
+                                country_errors.append(country_result)
+                    print str(len(conflicts)) + " conflicts"
+                    print str(len(product_errors)) + " product errors"
+                    print str(len(country_errors)) + " country errors"
+                    print conflicts
+                    return render_to_response("reconcile.html",
+                        {"conflicts": conflicts})
+
             except Exception, e:
                 print 'BANG'
-                print Exception
                 print e
                 import ipdb;ipdb.set_trace()
             return HttpResponseRedirect('/')
@@ -147,3 +268,19 @@ def upload(req):
         form = forms.UploadForm()
     return render_to_response("upload.html",\
             {"form": form})
+
+def reconcile(req):
+    return render_to_response("reconcile.html")#, {"conflicts":
+    #    json.dumps({"conflicts":[{'new': {u'product group': u'YF', u'input date': 40269.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 16.364356435643565, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 41320.0, u'% of lta alloc- total': 16.364356435643565, u'input date mon-yyyy': 40269.0, u'total doses': 413200.0, u'yyyy-mm': u' 2010-04', u'processing date n time': 40211.689710648148, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 388408.0, u'doses- forecast ': 413200.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 41320.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', u'yyyy-ww': u' 2010-13', u'comment ': 10009069.0}, 'existing': {'product group': 'YF', 'input date': 40269.0, 'total vials': 47370.0, '_rev': '1-fd8247a2148f48926403c3ea96305c68', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 18.760396039603961, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-04', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 18.760396039603961, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40269.0, 'product': 'YF-10', 'value of quantity on forecast and po': 445278.0, 'doses- forecast ': 473700.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 47370.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 473700.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', 'yyyy-ww': ' 2010-13'}}, {'new': {u'product group': u'YF', u'input date': 40269.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 3.3663366336633667, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 8500.0, u'% of lta alloc- total': 3.3663366336633667, u'input date mon-yyyy': 40269.0, u'total doses': 85000.0, u'yyyy-mm': u' 2010-04', u'processing date n time': 40211.689710648148, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 79900.0, u'doses- forecast ': 85000.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 8500.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', u'yyyy-ww': u' 2010-13', u'comment ': 10009574.0}, 'existing': {'product group': 'YF', 'input date': 40269.0, 'total vials': 47370.0, '_rev': '1-fd8247a2148f48926403c3ea96305c68', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 18.760396039603961, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-04', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 18.760396039603961, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40269.0, 'product': 'YF-10', 'value of quantity on forecast and po': 445278.0, 'doses- forecast ': 473700.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 47370.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 473700.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', 'yyyy-ww': ' 2010-13'}}, {'new': {u'product group': u'YF', u'input date': 40269.0, u'type of activity': u'Routine', u'% of lta alloc- forecast': 9.2594059405940587, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_02_08 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'GAVI', u'total vials': 23380.0, u'% of lta alloc- total': 9.2594059405940587, u'input date mon-yyyy': 40269.0, u'total doses': 233800.0, u'yyyy-mm': u' 2010-04', u'processing date n time': 40218.53334490741, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 219772.0, u'doses- forecast ': 233800.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 23380.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'b5d5433df80ab3fda0748cb628d400f8', u'yyyy-ww': u' 2010-13'}, 'existing': {'product group': 'YF', 'input date': 40269.0, 'total vials': 27680.0, '_rev': '1-2ff7bb46c15d2c29db3510004015217f', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 10.962376237623763, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-04', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 10.962376237623763, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40269.0, 'product': 'YF-10', 'value of quantity on forecast and po': 260192.0, 'doses- forecast ': 276800.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 27680.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 276800.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'b5d5433df80ab3fda0748cb628d400f8', 'yyyy-ww': ' 2010-13'}}, {'new': {u'product group': u'YF', u'input date': 40391.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 23.912871287128713, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_02_08 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 60380.0, u'% of lta alloc- total': 23.912871287128713, u'input date mon-yyyy': 40391.0, u'total doses': 603800.0, u'yyyy-mm': u' 2010-08', u'processing date n time': 40218.53334490741, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 567572.0, u'doses- forecast ': 603800.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 60380.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'ccc058f24a64c15f0a10477771beef9c', u'yyyy-ww': u' 2010-30'}, 'existing': {'product group': 'YF', 'input date': 40391.0, 'total vials': 75050.0, '_rev': '1-9f312b4998e606027000bff861678e6c', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 29.722772277227723, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-08', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 29.722772277227723, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40391.0, 'product': 'YF-10', 'value of quantity on forecast and po': 705470.0, 'doses- forecast ': 750500.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 75050.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 750500.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'ccc058f24a64c15f0a10477771beef9c', 'yyyy-ww': ' 2010-30'}}, {'new': {u'product group': u'YF', u'input date': 40210.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 3.3663366336633667, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_02_08 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 8500.0, u'% of lta alloc- total': 3.3663366336633667, u'input date mon-yyyy': 40210.0, u'total doses': 85000.0, u'yyyy-mm': u' 2010-02', u'processing date n time': 40218.533356481479, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 79900.0, u'doses- forecast ': 85000.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 8500.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': '1772d137a45a74422f25eab5e96efb41', u'yyyy-ww': u' 2010-05', u'comment ': 10009574.0}, 'existing': {'product group': 'YF', 'input date': 40210.0, 'total vials': 8500.0, 'campaign type': 'Co-financing', '_rev': '1-5f521e32d6e7f6040e9d3171546bc812', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 3.3663366336633667, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-02', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 3.3663366336633667, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40210.0, 'product': 'YF-10', 'value of quantity on forecast and po': 79900.0, 'doses- forecast ': 85000.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 8500.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 85000.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': '1772d137a45a74422f25eab5e96efb41', 'yyyy-ww': ' 2010-05', 'comment ': 10009574.0}}, {'new': {u'product group': u'YF', u'input date': 40269.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 16.364356435643565, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_02_08 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 41320.0, u'% of lta alloc- total': 16.364356435643565, u'input date mon-yyyy': 40269.0, u'total doses': 413200.0, u'yyyy-mm': u' 2010-04', u'processing date n time': 40218.533356481479, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 388408.0, u'doses- forecast ': 413200.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 41320.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', u'yyyy-ww': u' 2010-13', u'comment ': 10009069.0}, 'existing': {'product group': 'YF', 'input date': 40269.0, 'total vials': 47370.0, '_rev': '1-fd8247a2148f48926403c3ea96305c68', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 18.760396039603961, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-04', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 18.760396039603961, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40269.0, 'product': 'YF-10', 'value of quantity on forecast and po': 445278.0, 'doses- forecast ': 473700.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 47370.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 473700.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', 'yyyy-ww': ' 2010-13'}}]})
+    #})
+
+def conflicts(req):
+    conf = {"conflicts":[{'new': {u'product group': u'YF', u'input date': 40269.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 16.364356435643565, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 41320.0, u'% of lta alloc- total': 16.364356435643565, u'input date mon-yyyy': 40269.0, u'total doses': 413200.0, u'yyyy-mm': u' 2010-04', u'processing date n time': 40211.689710648148, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 388408.0, u'doses- forecast ': 413200.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 41320.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', u'yyyy-ww': u' 2010-13', u'comment ': 10009069.0}, 'existing': {'product group': 'YF', 'input date': 40269.0, 'total vials': 47370.0, '_rev': '1-fd8247a2148f48926403c3ea96305c68', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 18.760396039603961, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-04', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 18.760396039603961, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40269.0, 'product': 'YF-10', 'value of quantity on forecast and po': 445278.0, 'doses- forecast ': 473700.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 47370.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 473700.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', 'yyyy-ww': ' 2010-13'}}, {'new': {u'product group': u'YF', u'input date': 40269.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 3.3663366336633667, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 8500.0, u'% of lta alloc- total': 3.3663366336633667, u'input date mon-yyyy': 40269.0, u'total doses': 85000.0, u'yyyy-mm': u' 2010-04', u'processing date n time': 40211.689710648148, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 79900.0, u'doses- forecast ': 85000.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 8500.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', u'yyyy-ww': u' 2010-13', u'comment ': 10009574.0}, 'existing': {'product group': 'YF', 'input date': 40269.0, 'total vials': 47370.0, '_rev': '1-fd8247a2148f48926403c3ea96305c68', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 18.760396039603961, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-04', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 18.760396039603961, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40269.0, 'product': 'YF-10', 'value of quantity on forecast and po': 445278.0, 'doses- forecast ': 473700.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 47370.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 473700.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', 'yyyy-ww': ' 2010-13'}}, {'new': {u'product group': u'YF', u'input date': 40269.0, u'type of activity': u'Routine', u'% of lta alloc- forecast': 9.2594059405940587, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_02_08 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'GAVI', u'total vials': 23380.0, u'% of lta alloc- total': 9.2594059405940587, u'input date mon-yyyy': 40269.0, u'total doses': 233800.0, u'yyyy-mm': u' 2010-04', u'processing date n time': 40218.53334490741, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 219772.0, u'doses- forecast ': 233800.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 23380.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'b5d5433df80ab3fda0748cb628d400f8', u'yyyy-ww': u' 2010-13'}, 'existing': {'product group': 'YF', 'input date': 40269.0, 'total vials': 27680.0, '_rev': '1-2ff7bb46c15d2c29db3510004015217f', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 10.962376237623763, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-04', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 10.962376237623763, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40269.0, 'product': 'YF-10', 'value of quantity on forecast and po': 260192.0, 'doses- forecast ': 276800.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 27680.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 276800.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'b5d5433df80ab3fda0748cb628d400f8', 'yyyy-ww': ' 2010-13'}}, {'new': {u'product group': u'YF', u'input date': 40391.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 23.912871287128713, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_02_08 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 60380.0, u'% of lta alloc- total': 23.912871287128713, u'input date mon-yyyy': 40391.0, u'total doses': 603800.0, u'yyyy-mm': u' 2010-08', u'processing date n time': 40218.53334490741, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 567572.0, u'doses- forecast ': 603800.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 60380.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'ccc058f24a64c15f0a10477771beef9c', u'yyyy-ww': u' 2010-30'}, 'existing': {'product group': 'YF', 'input date': 40391.0, 'total vials': 75050.0, '_rev': '1-9f312b4998e606027000bff861678e6c', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 29.722772277227723, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-08', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 29.722772277227723, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40391.0, 'product': 'YF-10', 'value of quantity on forecast and po': 705470.0, 'doses- forecast ': 750500.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 75050.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 750500.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'ccc058f24a64c15f0a10477771beef9c', 'yyyy-ww': ' 2010-30'}}, {'new': {u'product group': u'YF', u'input date': 40210.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 3.3663366336633667, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_02_08 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 8500.0, u'% of lta alloc- total': 3.3663366336633667, u'input date mon-yyyy': 40210.0, u'total doses': 85000.0, u'yyyy-mm': u' 2010-02', u'processing date n time': 40218.533356481479, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 79900.0, u'doses- forecast ': 85000.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 8500.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': '1772d137a45a74422f25eab5e96efb41', u'yyyy-ww': u' 2010-05', u'comment ': 10009574.0}, 'existing': {'product group': 'YF', 'input date': 40210.0, 'total vials': 8500.0, 'campaign type': 'Co-financing', '_rev': '1-5f521e32d6e7f6040e9d3171546bc812', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 3.3663366336633667, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-02', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 3.3663366336633667, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40210.0, 'product': 'YF-10', 'value of quantity on forecast and po': 79900.0, 'doses- forecast ': 85000.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 8500.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 85000.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': '1772d137a45a74422f25eab5e96efb41', 'yyyy-ww': ' 2010-05', 'comment ': 10009574.0}}, {'new': {u'product group': u'YF', u'input date': 40269.0, u'type of activity': u'Routine', u'campaign type': u'Co-financing', u'% of lta alloc- forecast': 16.364356435643565, u'doses- on po': 0.0, u'ins': u'YES', u'vvm status or device split': u'Incl. VVM', u'input file details': u'10_02_08 Backup Allocation Table YF.xlsx - 10-12 YF', u'gavi/ non gavi': u'Non GAVI', u'total vials': 41320.0, u'% of lta alloc- total': 16.364356435643565, u'input date mon-yyyy': 40269.0, u'total doses': 413200.0, u'yyyy-mm': u' 2010-04', u'processing date n time': 40218.533356481479, u'supplier': u'Sanofi 42103232', 'date_uploaded': '2010-11-16 18:26:19', u'% of lta alloc- on po': 0.0, u'product': u'YF-10', u'source country': u'France', u'value of quantity on forecast and po': 388408.0, u'doses- forecast ': 413200.0, u'file type': u'Monthly', u'region': u'WCARO', u'yyyy': 2010.0, u'vials - forecast': 41320.0, u'lta allocation': 2525000.0, u'doses/ vial': 10.0, u'country': u'Niger', u'price/vial': 9.4000000000000004, u'order type': u'PS', u'_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', u'yyyy-ww': u' 2010-13', u'comment ': 10009069.0}, 'existing': {'product group': 'YF', 'input date': 40269.0, 'total vials': 47370.0, '_rev': '1-fd8247a2148f48926403c3ea96305c68', 'doses- on po': 0.0, 'ins': 'YES', 'vvm status or device split': 'Incl. VVM', 'input file details': '10_01_31 Backup Allocation Table YF.xlsx - 10-12 YF', 'gavi/ non gavi': 'Non GAVI', 'type of activity': 'Routine', '% of lta alloc- total': 18.760396039603961, '% of lta alloc- on po': 0.0, 'yyyy-mm': ' 2010-04', 'processing date n time': 40211.689710648148, 'supplier': 'Sanofi 42103232', '% of lta alloc- forecast': 18.760396039603961, 'date_uploaded': '2010-11-16 18:26:19', 'input date mon-yyyy': 40269.0, 'product': 'YF-10', 'value of quantity on forecast and po': 445278.0, 'doses- forecast ': 473700.0, 'source country': 'France', 'file type': 'Monthly', 'yyyy': 2010.0, 'vials - forecast': 47370.0, 'doses/ vial': 10.0, 'country': 'Niger', 'region': 'WCARO', 'lta allocation': 2525000.0, 'total doses': 473700.0, 'price/vial': 9.4000000000000004, 'order type': 'PS', '_id': 'e578cb9318e2bf8117b5d3ecdd62ac05', 'yyyy-ww': ' 2010-13'}}]}
+    data = json.dumps(conf)
+    return HttpResponse(data)
+
+def columns(req):
+    col_list = ['product group', 'input date', 'type of activity', u'campaign type', '_rev', 'doses- on po', 'ins', 'vvm status or device split', 'input file details', 'gavi/ non gavi', 'total vials', '% of lta alloc- total', 'yyyy-mm', 'processing date n time', 'supplier', '% of lta alloc- forecast', 'date_uploaded', '% of lta alloc- on po', 'product', 'value of quantity on forecast and po', 'doses- forecast ', 'source country', 'file type', 'price/vial', 'yyyy', 'vials - forecast', 'lta allocation', 'doses/ vial', 'country', 'region', 'total doses', 'input date mon-yyyy', 'order type', '_id', 'yyyy-ww', u'comment ']
+    cols = [{'id':c, 'name':c, 'field':c} for c in col_list]
+    data = json.dumps(cols)
+    return HttpResponse(data)

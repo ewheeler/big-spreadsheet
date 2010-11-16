@@ -1,0 +1,120 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+		<title>SlickGrid example 3: Editing</title>
+		<link rel="stylesheet" href="/assets/slick.grid.css" type="text/css" media="screen" charset="utf-8" />
+		<link rel="stylesheet" href="/assets/css/smoothness/jquery-ui-1.8.5.custom.css" type="text/css" media="screen" charset="utf-8" />
+		<link rel="stylesheet" href="/assets/examples.css" type="text/css" media="screen" charset="utf-8" />
+		<style>
+		.cell-title {
+			font-weight: bold;
+		}
+
+		.cell-effort-driven {
+			text-align: center;
+		}
+		.mine{
+			background-color: green;
+		}
+		.yours{
+			background-color: red;
+		}
+	</style>
+	</head>
+	<body>
+
+
+		<div style="width:600px;float:left;">
+			<div id="myGrid" style="width:100%;height:500px;"></div>
+		</div>
+
+		<div class="options-panel" style="width:320px;margin-left:650px;">
+            <h2>Demonstrates:</h2>
+            <ul>
+                <li>adding basic keyboard navigation and editing</li>
+                <li>custom editors and validators</li>
+                <li>auto-edit settings</li>
+            </ul>
+
+            <h2>Options:</h2>
+            <button onclick="grid.setOptions({autoEdit:true})">Auto-edit ON</button> 
+            &nbsp;
+            <button onclick="grid.setOptions({autoEdit:false})">Auto-edit OFF</button>
+		</div>
+
+		<script language="JavaScript" src="/assets/firebugx.js"></script>
+
+		<script language="JavaScript" src="/assets/jquery-1.4.3.min.js"></script>
+		<script language="JavaScript" src="/assets/jquery-ui-1.8.5.custom.min.js"></script>
+		<script language="JavaScript" src="/assets/jquery.event.drag-2.0.min.js"></script>
+
+		<script language="JavaScript" src="/assets/slick.editors.js"></script>
+		<script language="JavaScript" src="/assets/slick.grid.js"></script>
+
+		<script>
+		function requiredFieldValidator(value) {
+			if (value == null || value == undefined || !value.length)
+				return {valid:false, msg:"This is a required field"};
+			else
+				return {valid:true, msg:null};
+		}
+
+		var options = {
+			editable: true,
+			enableAddRow: true,
+			enableCellNavigation: true,
+			asyncEditorLoading: false
+		};
+		var grid;
+
+		$(function(){
+			var rowdata= []
+			var colnames=[]
+			var columns=[]
+			jQuery.getJSON('/conflicts', function(response){
+				$.each(response.conflicts, function(index, value){
+					mine = value.existing
+					$.each(mine, function(k, v){
+					    if ($.inArray(k, colnames) == -1){
+					    	colnames.push(k);
+					    	columns.push({ "id": k, "name": k, "field": k });
+					    }
+					});
+					rowdata.push(value.existing)
+
+					yours = value.new
+					$.each(yours, function(k, v){
+					    if ($.inArray(k, colnames) == -1){
+					    	colnames.push(k);
+					    	columns.push({ "id": k, "name": k, "field": k });
+					    }
+					});
+					rowdata.push(value.new)
+					});
+				grid = new Slick.Grid($("#myGrid"),rowdata, columns, options);
+
+				grid.onAddNewRow = function(item,colDef) {
+				grid.removeRow(rowdata.length);
+				rowdata.push(item);
+				grid.updateRowCount();
+				grid.render();
+			    }
+			});
+		});
+
+		</script>
+
+            <span style="display:none;">
+                {% if conflicts %}
+		    {% for conflict in conflicts %}
+			<ul class="conflict">
+			{% for k, v in conflict.items %}
+				<li class="{{k}}">{{v}}</li>
+			{% endfor %}
+			</ul>
+		    {% endfor %}
+                {% endif %}
+            </span>
+	</body>
+</html>

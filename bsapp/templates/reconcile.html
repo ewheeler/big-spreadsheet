@@ -19,16 +19,14 @@
 	<body>
 
 
-		<div style="width:600px;float:left;">
+		<div style="width:75%;float:left;">
 			<div id="myGrid" style="width:100%;height:500px;"></div>
 		</div>
 
-		<div class="options-panel" style="width:320px;margin-left:650px;">
-            <h2>Demonstrates:</h2>
+		<div class="options-panel" style="width:15%;margin-left:80%;">
+            <h2>Resolve conflicts:</h2>
             <ul>
-                <li>adding basic keyboard navigation and editing</li>
-                <li>custom editors and validators</li>
-                <li>auto-edit settings</li>
+                <li>For each set of conflicting rows, choose a single row to use.</li>
             </ul>
 
             <h2>Options:</h2>
@@ -66,25 +64,90 @@
 			var rowdata= []
 			var colnames=[]
 			var columns=[]
+			columns.push({id:"choice", name:"choice", width:80, minWidth:20, maxWidth:80, cssClass:"cell-effort-driven", field:"choice", formatter:BoolCellFormatter, editor:YesNoCheckboxCellEditor})
 			jQuery.getJSON('/conflicts', function(response){
 				$.each(response.conflicts, function(index, value){
-					mine = value.existing
+					mine = value.existing;
 					$.each(mine, function(k, v){
 					    if ($.inArray(k, colnames) == -1){
 					    	colnames.push(k);
-					    	columns.push({ "id": k, "name": k, "field": k });
+						column_obj = { "id": k, "name": k, "field": k };
+						switch(k){
+							case '% of lta alloc- on po':
+								column_obj.width = 80;
+								column_obj.resizable = false;
+								column_obj.formatter = GraphicalPercentCompleteCellFormatter;
+								column_obj.editor = PercentCompleteCellEditor;
+								break;
+							case '% of lta alloc- total':
+								column_obj.width = 80;
+								column_obj.resizable = false;
+								column_obj.formatter = GraphicalPercentCompleteCellFormatter;
+								column_obj.editor = PercentCompleteCellEditor;
+								break;
+							case '% of lta alloc- forecast':
+								column_obj.width = 80;
+								column_obj.resizable = false;
+								column_obj.formatter = GraphicalPercentCompleteCellFormatter;
+								column_obj.editor = PercentCompleteCellEditor;
+								break;
+							case 'input date':
+								column_obj.minWidth = 60;
+								column_obj.editor = DateCellEditor;
+								break;
+							case 'processing date':
+								column_obj.minWidth = 60;
+								column_obj.editor = DateCellEditor;
+								break;
+							default:
+								column_obj.editor = TextCellEditor;
+						}
+						columns.push(column_obj);
 					    }
 					});
-					rowdata.push(value.existing)
+					value.existing.choice = 0;
+					rowdata.push(value.existing);
 
-					yours = value.new
+					yours = value.new;
 					$.each(yours, function(k, v){
 					    if ($.inArray(k, colnames) == -1){
 					    	colnames.push(k);
-					    	columns.push({ "id": k, "name": k, "field": k });
+						column_obj = { "id": k, "name": k, "field": k };
+						switch(k){
+							case '% of lta alloc- on po':
+								column_obj.width = 80;
+								column_obj.resizable = false;
+								column_obj.formatter = GraphicalPercentCompleteCellFormatter;
+								column_obj.editor = PercentCompleteCellEditor;
+								break;
+							case '% of lta alloc- total':
+								column_obj.width = 80;
+								column_obj.resizable = false;
+								column_obj.formatter = GraphicalPercentCompleteCellFormatter;
+								column_obj.editor = PercentCompleteCellEditor;
+								break;
+							case '% of lta alloc- forecast':
+								column_obj.width = 80;
+								column_obj.resizable = false;
+								column_obj.formatter = GraphicalPercentCompleteCellFormatter;
+								column_obj.editor = PercentCompleteCellEditor;
+								break;
+							case 'input date':
+								column_obj.minWidth = 60;
+								column_obj.editor = DateCellEditor;
+								break;
+							case 'processing date':
+								column_obj.minWidth = 60;
+								column_obj.editor = DateCellEditor;
+								break;
+							default:
+								column_obj.editor = TextCellEditor;
+						}
+						columns.push(column_obj);
 					    }
 					});
-					rowdata.push(value.new)
+					value.new.choice = 0;
+					rowdata.push(value.new);
 					});
 				grid = new Slick.Grid($("#myGrid"),rowdata, columns, options);
 

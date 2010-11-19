@@ -54,10 +54,14 @@
 
 		var options = {
 			editable: true,
-			enableAddRow: true,
+			enableAddRow: false,
 			enableCellNavigation: true,
-			asyncEditorLoading: false
+			asyncEditorLoading: false,
+			rowCssClasses: function(item) {
+				return (item.status == 'existing') ? 'existing' : 'new';
+			}
 		};
+
 		var grid;
 
 		$(function(){
@@ -65,6 +69,7 @@
 			var colnames=[]
 			var columns=[]
 			columns.push({id:"choice", name:"choice", width:80, minWidth:20, maxWidth:80, cssClass:"cell-effort-driven", field:"choice", formatter:BoolCellFormatter, editor:YesNoCheckboxCellEditor})
+			columns.push({id:"status", name:"status", width:80, minWidth:20, maxWidth:80, field:"status"})
 			jQuery.getJSON('/conflicts', function(response){
 				$.each(response.conflicts, function(index, value){
 					mine = value.existing;
@@ -106,6 +111,7 @@
 					    }
 					});
 					value.existing.choice = 0;
+					value.existing.status = 'existing';
 					rowdata.push(value.existing);
 
 					yours = value.new;
@@ -147,6 +153,7 @@
 					    }
 					});
 					value.new.choice = 0;
+					value.new.status = 'new';
 					rowdata.push(value.new);
 					});
 				grid = new Slick.Grid($("#myGrid"),rowdata, columns, options);

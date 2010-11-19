@@ -117,6 +117,14 @@ li {
 	color: #555;
 }
 
+.slick-row.existing {
+	background-color: #DFD;
+	color: #555;
+}
+.slick-row.new{
+	background-color: #FEFFC8;
+	color: #555;
+}
 .percent-complete-bar {
 	display: inline-block;
 	height: 6px;
